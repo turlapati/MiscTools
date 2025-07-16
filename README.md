@@ -11,12 +11,20 @@ A collection of handy Python scripts for various tasks.
 
 ## Directory Tree Generator (`dirtree.py`)
 
-A script to generate a text-based representation of a directory structure. It's useful for quickly visualizing a project's layout.
+A script to generate a directory structure in two formats: a classic text tree or an interactive, collapsible Markdown file.
+
+The script automatically respects all `.*ignore` files (e.g., `.gitignore`, `.codeiumignore`) found in the project's root directory.
 
 ### Usage
 
+**For a simple text tree:**
 ```bash
 python dirtree.py [path_to_directory]
+```
+
+**For an interactive Markdown file:**
+```bash
+python dirtree.py [path_to_directory] --format markdown --output tree.md
 ```
 
 ---
