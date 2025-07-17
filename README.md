@@ -11,21 +11,50 @@ A collection of handy Python scripts for various tasks.
 
 ## Directory Tree Generator (`dirtree.py`)
 
-A script to generate a directory structure in two formats: a classic text tree or an interactive, collapsible Markdown file.
+A versatile command-line tool to generate a visual representation of a directory structure in various formats. It's designed to be simple to use, yet powerful enough to create clean text trees, interactive Markdown files, or even self-contained HTML files for note-taking.
 
-The script automatically respects all `.*ignore` files (e.g., `.gitignore`, `.codeiumignore`) found in the project's root directory.
+### Features
+
+*   **Multiple Output Formats**: Generate the directory tree in `text`, `markdown`, or `html` format.
+*   **Interactive HTML**: The `html` format creates a single, self-contained file with a collapsible tree and inline note-taking capabilities. Save your notes simply by saving the page (`Ctrl+S`).
+*   **Interactive Markdown**: The `markdown` format uses `<details>` and `<summary>` tags to create a collapsible tree that works on platforms like GitHub.
+*   **Smart Ignoring**: Automatically respects patterns from all `.*ignore` files (e.g., `.gitignore`, `.codeiumignore`) in the root directory, in addition to a comprehensive list of default patterns.
+*   **Dynamic Filenames**: Default output filenames are intelligently derived from the root directory's name (e.g., `my_project` -> `my_project.html`).
 
 ### Usage
 
-**For a simple text tree:**
+The script can be run from the command line.
+
 ```bash
-python dirtree.py [path_to_directory]
+python3 dirtree.py [root_directory] [options]
 ```
 
-**For an interactive Markdown file:**
-```bash
-python dirtree.py [path_to_directory] --format markdown --output tree.md
-```
+**Arguments:**
+
+*   `root_directory`: The path to the directory you want to scan. Defaults to the current directory (`.`).
+
+**Options:**
+
+*   `--format [text|markdown|html]`: Specify the output format. Defaults to `text`.
+*   `--output [FILENAME]`: Set the output filename for the Markdown format. Defaults to `<root_directory_name>.md`.
+*   `--html-output [FILENAME]`: Set the output filename for the HTML format. Defaults to `<root_directory_name>.html`.
+
+### Examples
+
+1.  **Generate a simple text tree of the current directory:**
+    ```bash
+    python3 dirtree.py
+    ```
+
+2.  **Generate an interactive Markdown file for a specific project:**
+    ```bash
+    python3 dirtree.py /path/to/my_project --format markdown
+    ```
+
+3.  **Generate a self-contained HTML file with a custom name:**
+    ```bash
+    python3 dirtree.py . --format html --html-output project_notes.html
+    ```
 
 ---
 
