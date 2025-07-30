@@ -2,8 +2,10 @@ import os
 import fnmatch
 import sys
 import argparse
+import re
+import time
 from pathlib import Path
-from typing import List, Set
+from typing import List, Set, Optional
 
 def get_ignore_patterns(root_dir: Path) -> Set[str]:
     """
@@ -28,13 +30,75 @@ def get_ignore_patterns(root_dir: Path) -> Set[str]:
                         patterns.add(stripped_line.strip('/'))
     return patterns
 
+def parse_time_expression(time_expr: str) -> Optional[float]:
+    """
+    Parse time expressions like '2h', '30m', '7d' and return seconds.
+    Returns None if the expression is invalid.
+    """
+    if not time_expr:
+        return None
+    
+    match = re.match(r'^(\d+)([mhd])$', time_expr.lower())
+    if not match:
+        return None
+    
+    value, unit = match.groups()
+    value = int(value)
+    
+    if unit == 'm':  # minutes
+        return value * 60
+    elif unit == 'h':  # hours
+        return value * 3600
+    elif unit == 'd':  # days
+        return value * 86400
+    
+    return None
+
+def should_include_by_time(path: Path, newer_than: Optional[float], older_than: Optional[float]) -> bool:
+    """
+    Check if a file/directory should be included based on time filters.
+    """
+    if newer_than is None and older_than is None:
+        return True
+    
+    try:
+        mtime = path.stat().st_mtime
+        current_time = time.time()
+        
+        if newer_than is not None:
+            if current_time - mtime > newer_than:
+                return False
+        
+        if older_than is not None:
+            if current_time - mtime < older_than:
+                return False
+        
+        return True
+    except (OSError, PermissionError):
+        return True  # Include if we can't get stats
+
 # --- Text Tree Generation ---
 
-def _generate_text_tree(directory: Path, prefix: str, ignore_patterns: Set[str]):
+def _generate_text_tree(directory: Path, prefix: str, ignore_patterns: Set[str], 
+                       max_depth: Optional[int] = None, current_depth: int = 0,
+                       dirs_only: bool = False, newer_than: Optional[float] = None, 
+                       older_than: Optional[float] = None):
     """Recursive helper to generate and print the text directory tree."""
+    if max_depth is not None and current_depth >= max_depth:
+        return
+        
     try:
         # Filter entries based on ignore patterns
         entries = [e for e in directory.iterdir() if not any(fnmatch.fnmatch(e.name, p) for p in ignore_patterns)]
+        
+        # Filter by time if specified
+        if newer_than is not None or older_than is not None:
+            entries = [e for e in entries if should_include_by_time(e, newer_than, older_than)]
+        
+        # Filter by dirs_only if specified
+        if dirs_only:
+            entries = [e for e in entries if e.is_dir()]
+        
         # Sort entries by name
         entries.sort(key=lambda e: e.name)
     except PermissionError:
@@ -47,26 +111,46 @@ def _generate_text_tree(directory: Path, prefix: str, ignore_patterns: Set[str])
         if entry.is_dir():
             print(f"{prefix}{connector}{entry.name}/")
             extension = "    " if is_last else "│   "
-            _generate_text_tree(entry, prefix + extension, ignore_patterns)
+            _generate_text_tree(entry, prefix + extension, ignore_patterns, 
+                              max_depth, current_depth + 1, dirs_only, newer_than, older_than)
         else:
-            print(f"{prefix}{connector}{entry.name}")
+            if not dirs_only:  # Only print files if not dirs_only mode
+                print(f"{prefix}{connector}{entry.name}")
 
-def list_project_structure(root_dir_str: str):
+def list_project_structure(root_dir_str: str, max_depth: Optional[int] = None, 
+                          dirs_only: bool = False, newer_than: Optional[float] = None, 
+                          older_than: Optional[float] = None):
     """Prints a text tree view of a project directory."""
     root_dir = Path(root_dir_str).resolve()
     if not root_dir.is_dir():
         print(f"Error: Directory not found at '{root_dir_str}'")
         return
+    
     ignore_patterns = get_ignore_patterns(root_dir)
     print(f"{root_dir.name}/")
-    _generate_text_tree(root_dir, "", ignore_patterns)
+    _generate_text_tree(root_dir, "", ignore_patterns, max_depth, 0, dirs_only, newer_than, older_than)
 
 # --- Markdown Tree Generation ---
 
-def _generate_markdown_tree(directory: Path, prefix: str, ignore_patterns: Set[str], lines: List[str]):
+def _generate_markdown_tree(directory: Path, prefix: str, ignore_patterns: Set[str], lines: List[str],
+                           max_depth: Optional[int] = None, current_depth: int = 0,
+                           dirs_only: bool = False, newer_than: Optional[float] = None, 
+                           older_than: Optional[float] = None):
     """Recursive helper to build the Markdown directory tree."""
+    if max_depth is not None and current_depth >= max_depth:
+        return
+        
     try:
         entries = [e for e in directory.iterdir() if not any(fnmatch.fnmatch(e.name, p) for p in ignore_patterns)]
+        
+        # Filter by time if specified
+        if newer_than is not None or older_than is not None:
+            entries = [e for e in entries if should_include_by_time(e, newer_than, older_than)]
+        
+        # Filter by dirs_only if specified
+        if dirs_only:
+            entries = [e for e in entries if e.is_dir()]
+            
         entries.sort(key=lambda e: e.name)
     except PermissionError:
         lines.append(f"{prefix}- [Permission Denied]")
@@ -76,8 +160,9 @@ def _generate_markdown_tree(directory: Path, prefix: str, ignore_patterns: Set[s
     dirs = [e for e in entries if e.is_dir()]
     files = [e for e in entries if not e.is_dir()]
 
-    for file_entry in files:
-        lines.append(f"{prefix}- 📄 {file_entry.name}")
+    if not dirs_only:  # Only show files if not in dirs-only mode
+        for file_entry in files:
+            lines.append(f"{prefix}- 📄 {file_entry.name}")
 
     for dir_entry in dirs:
         # The <details> block is at the current prefix level
@@ -86,13 +171,19 @@ def _generate_markdown_tree(directory: Path, prefix: str, ignore_patterns: Set[s
         lines.append('') # Blank line is essential for the Markdown parser
         
         # The recursive call gets a deeper indentation
-        _generate_markdown_tree(dir_entry, prefix + '  ', ignore_patterns, lines)
+        _generate_markdown_tree(dir_entry, prefix + '  ', ignore_patterns, lines,
+                              max_depth, current_depth + 1, dirs_only, newer_than, older_than)
         
         lines.append(f'{prefix}</details>')
 
 
-def build_tree(current_dir: Path, ignore_patterns: Set[str]) -> dict:
+def build_tree(current_dir: Path, ignore_patterns: Set[str], max_depth: Optional[int] = None, 
+               current_depth: int = 0, dirs_only: bool = False, 
+               newer_than: Optional[float] = None, older_than: Optional[float] = None) -> dict:
     """Recursively builds a nested dictionary representing the directory structure."""
+    if max_depth is not None and current_depth >= max_depth:
+        return {}
+        
     tree = {}
     # Sort entries, directories first, then alphabetically
     entries = sorted(list(current_dir.iterdir()), key=lambda p: (p.is_file(), p.name.lower()))
@@ -100,8 +191,18 @@ def build_tree(current_dir: Path, ignore_patterns: Set[str]) -> dict:
         if any(fnmatch.fnmatch(entry.name, pattern) for pattern in ignore_patterns) or \
            any(fnmatch.fnmatch(str(entry.relative_to(current_dir.parent)), pattern) for pattern in ignore_patterns):
             continue
+            
+        # Filter by time if specified
+        if not should_include_by_time(entry, newer_than, older_than):
+            continue
+            
+        # Filter by dirs_only if specified
+        if dirs_only and not entry.is_dir():
+            continue
+            
         if entry.is_dir():
-            tree[entry.name] = build_tree(entry, ignore_patterns)
+            tree[entry.name] = build_tree(entry, ignore_patterns, max_depth, current_depth + 1, 
+                                         dirs_only, newer_than, older_than)
         else:
             tree[entry.name] = None
     return tree
@@ -239,7 +340,9 @@ def generate_html_output(tree_dict, output_filename):
         f.write(html_content)
     print(f"Successfully generated '{output_filename}'. Open it in a browser to see the result.")
 
-def generate_markdown_file(root_dir_str: str, output_file: str):
+def generate_markdown_file(root_dir_str: str, output_file: str, max_depth: Optional[int] = None,
+                          dirs_only: bool = False, newer_than: Optional[float] = None, 
+                          older_than: Optional[float] = None):
     """Generates an interactive Markdown file of the project directory."""
     root_dir = Path(root_dir_str).resolve()
     if not root_dir.is_dir():
@@ -249,7 +352,7 @@ def generate_markdown_file(root_dir_str: str, output_file: str):
     ignore_patterns = get_ignore_patterns(root_dir)
     lines = [f"# Directory Tree for {root_dir.name}\n"]
     
-    _generate_markdown_tree(root_dir, "", ignore_patterns, lines)
+    _generate_markdown_tree(root_dir, "", ignore_patterns, lines, max_depth, 0, dirs_only, newer_than, older_than)
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
@@ -267,13 +370,15 @@ def _generate_text_from_tree(tree: dict, prefix=""):
             lines.extend(_generate_text_from_tree(tree[name], new_prefix))
     return lines
 
-def generate_text_output(root_dir_str: str):
+def generate_text_output(root_dir_str: str, max_depth: Optional[int] = None,
+                        dirs_only: bool = False, newer_than: Optional[float] = None, 
+                        older_than: Optional[float] = None):
     root_dir = Path(root_dir_str).resolve()
     if not root_dir.is_dir():
         print(f"Error: Directory not found at '{root_dir_str}'")
         return
     ignore_patterns = get_ignore_patterns(root_dir)
-    tree = build_tree(root_dir, ignore_patterns)
+    tree = build_tree(root_dir, ignore_patterns, max_depth, 0, dirs_only, newer_than, older_than)
     print(root_dir.name)
     lines = _generate_text_from_tree(tree)
     for line in lines:
@@ -291,14 +396,16 @@ def _generate_markdown_from_tree(tree: dict, lines: list, prefix=""):
             _generate_markdown_from_tree(tree[name], lines, prefix + "  ")
             lines.append(f'{prefix}</details>')
 
-def generate_markdown_output(root_dir_str: str, output_file: str):
+def generate_markdown_output(root_dir_str: str, output_file: str, max_depth: Optional[int] = None,
+                            dirs_only: bool = False, newer_than: Optional[float] = None, 
+                            older_than: Optional[float] = None):
     """Generates an interactive Markdown file of the project directory."""
     root_dir = Path(root_dir_str).resolve()
     if not root_dir.is_dir():
         print(f"Error: Directory not found at '{root_dir_str}'")
         return
     ignore_patterns = get_ignore_patterns(root_dir)
-    tree = build_tree(root_dir, ignore_patterns)
+    tree = build_tree(root_dir, ignore_patterns, max_depth, 0, dirs_only, newer_than, older_than)
     lines = [f"# Directory Tree for {root_dir.name}\n"]
     _generate_markdown_from_tree({root_dir.name: tree}, lines)
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -322,6 +429,22 @@ if __name__ == '__main__':
     parser.add_argument(
         '--html-output', default=None, help="Output file for HTML format. Defaults to <root_dir_name>.html."
     )
+    parser.add_argument(
+        '--max-depth', '-L', type=int, default=None, 
+        help="Limit directory traversal to specified depth (e.g., --max-depth 2)"
+    )
+    parser.add_argument(
+        '--dirs-only', '-d', action='store_true', 
+        help="Show only directories, skip files"
+    )
+    parser.add_argument(
+        '--newer-than', type=str, default=None,
+        help="Show only files/dirs modified within specified time (e.g., '2h', '30m', '7d')"
+    )
+    parser.add_argument(
+        '--older-than', type=str, default=None,
+        help="Show only files/dirs older than specified time (e.g., '2h', '30m', '7d')"
+    )
     
     args = parser.parse_args()
     root_dir = Path(args.root_dir).resolve()
@@ -336,12 +459,31 @@ if __name__ == '__main__':
         print(f"Error: Directory not found at '{args.root_dir}'")
         sys.exit(1)
 
-    ignore_patterns = get_ignore_patterns(root_dir)
-    tree = {root_dir.name: build_tree(root_dir, ignore_patterns)}
+    # Parse time expressions
+    newer_than_seconds = None
+    older_than_seconds = None
+    
+    if args.newer_than:
+        newer_than_seconds = parse_time_expression(args.newer_than)
+        if newer_than_seconds is None:
+            print(f"Error: Invalid time expression '{args.newer_than}'. Use format like '2h', '30m', '7d'")
+            sys.exit(1)
+    
+    if args.older_than:
+        older_than_seconds = parse_time_expression(args.older_than)
+        if older_than_seconds is None:
+            print(f"Error: Invalid time expression '{args.older_than}'. Use format like '2h', '30m', '7d'")
+            sys.exit(1)
 
+    ignore_patterns = get_ignore_patterns(root_dir)
+    
     if args.format == 'markdown':
-        generate_markdown_output(args.root_dir, args.output)
+        generate_markdown_output(args.root_dir, args.output, args.max_depth, args.dirs_only, 
+                                newer_than_seconds, older_than_seconds)
     elif args.format == 'html':
+        tree = {root_dir.name: build_tree(root_dir, ignore_patterns, args.max_depth, 0, 
+                                         args.dirs_only, newer_than_seconds, older_than_seconds)}
         generate_html_output(tree, args.html_output)
     else: # 'text' format
-        generate_text_output(args.root_dir)
+        list_project_structure(args.root_dir, args.max_depth, args.dirs_only, 
+                              newer_than_seconds, older_than_seconds)
